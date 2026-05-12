@@ -829,53 +829,59 @@ function Install-Dependencies {
         $skipPipFallback = $false
     }
 
-    # Install main package.  Tiered fallback so a single flaky git+https dep
-    # (atroposlib / tinker in the [rl] extra) doesn't silently drop
-    # dashboard/MCP/cron/messaging extras.  Each tier's stdout/stderr is
+    # Install main package.  Tiered fallback so a single flaky transitive
+    # doesn't silently drop everything.  Each tier's stdout/stderr is
     # preserved — no Out-Null swallowing — so the user can see what failed.
     #
-    # Tier 1: [all] — everything, including RL git+https deps (best case).
-    # Tier 2: [all] minus a small list of currently-broken extras. The
-    #         broken list is centralised in $brokenExtras below — when
-    #         a package gets quarantined / yanked / pulled, add it here
-    #         and the resolver no longer chokes on it. This is what saves
-    #         the user from silently losing 10+ unrelated extras every
-    #         time one upstream package breaks.
-    # Tier 3: [core-extras] synthesised locally — all PyPI-only extras we
-    #         ship, also minus $brokenExtras. Drops [rl] and [matrix]
-    #         (linux-only) which are the usual failure culprits.
-    # Tier 4: [web,mcp,cron,cli,messaging,dev] — the minimum we strongly
-    #         believe a user expects `hermes dashboard` / slash commands /
-    #         cron / messaging platforms to work out of the box.
-    # Tier 5: bare `.` — last-resort so at least the core CLI launches.
+    # Tier 1: [all] — the curated extra in pyproject.toml.
+    # Tier 2: [all] minus the currently-broken extras list ($brokenExtras).
+    #         Edit $brokenExtras below when something on PyPI breaks; this
+    #         lets users keep the rest of [all] when one transitive is
+    #         unavailable. The list of [all]'s contents is parsed from
+    #         pyproject.toml at runtime — there is NO hand-mirrored copy
+    #         to drift out of sync.
+    # Tier 3: bare `.` — last-resort so at least the core CLI launches.
 
     # Currently-broken extras. Edit this list when an upstream package
     # gets quarantined / yanked / breaks resolution. Empty means everything
     # in [all] should be installable; populate with the names of extras
-    # whose deps are temporarily unavailable to keep installs working
-    # for users.
+    # whose deps are temporarily unavailable.
     $brokenExtras = @()
 
-    # Mirror [all] in pyproject.toml. Slim list (post-2026-05-12 lazy-install
-    # migration): only extras that genuinely can't be lazy-installed via
-    # tools/lazy_deps.py. Keep in sync with install.sh's _ALL_EXTRAS.
-    $allExtras = @(
-        "cron","cli","dev","pty","mcp","homeassistant","sms","acp",
-        "google","web","youtube"
-    )
-    $pypiExtras = @(
-        "web","mcp","cron","cli","dev","acp","pty","homeassistant","sms",
-        "google","youtube"
-    )
-    $safeAll  = ($allExtras  | Where-Object { $brokenExtras -notcontains $_ }) -join ","
-    $safePypi = ($pypiExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    # Parse [project.optional-dependencies].all from pyproject.toml.
+    # tomllib is stdlib on Python 3.11+ which the bootstrap guarantees.
+    $pythonExeForParse = if (-not $NoVenv) { "$InstallDir\venv\Scripts\python.exe" } else { (& $UvCmd python find $PythonVersion) }
+    $allExtras = @()
+    if (Test-Path $pythonExeForParse) {
+        $parsed = & $pythonExeForParse -c @"
+import re, sys, tomllib
+try:
+    with open('pyproject.toml', 'rb') as fh:
+        data = tomllib.load(fh)
+    specs = data['project']['optional-dependencies']['all']
+    out = []
+    for s in specs:
+        m = re.search(r'hermes-agent\[([\w-]+)\]', s)
+        if m: out.append(m.group(1))
+    print(','.join(out))
+except Exception:
+    sys.exit(1)
+"@ 2>$null
+        if ($LASTEXITCODE -eq 0 -and $parsed) {
+            $allExtras = $parsed.Trim().Split(',')
+        }
+    }
+    if (-not $allExtras -or $allExtras.Count -eq 0) {
+        Write-Warn "Could not parse [all] from pyproject.toml; Tier 2 will be a no-op."
+        $safeAll = "all"
+    } else {
+        $safeAll = ($allExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","
+    }
     $brokenLabel = if ($brokenExtras) { ($brokenExtras -join ", ") } else { "none" }
 
     $installTiers = @(
-        @{ Name = "all (with RL/matrix extras)"; Spec = ".[all]" },
+        @{ Name = "all"; Spec = ".[all]" },
         @{ Name = "all minus known-broken ($brokenLabel)"; Spec = ".[$safeAll]" },
-        @{ Name = "PyPI-only extras (no git deps)"; Spec = ".[$safePypi]" },
-        @{ Name = "dashboard + core platforms"; Spec = ".[web,mcp,cron,cli,messaging,dev]" },
         @{ Name = "core only (no extras)"; Spec = "." }
     )
     $installed = $skipPipFallback
