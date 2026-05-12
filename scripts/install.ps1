@@ -806,7 +806,14 @@ function Install-Dependencies {
     # current extras spec, NOT because they're equivalent in posture.
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
-        & $UvCmd sync --all-extras --locked
+        # Critical flag choice: `--extra all`, NOT `--all-extras`.
+        #   --all-extras = every [project.optional-dependencies] key,
+        #                  bypassing the curated [all] extra. On Windows
+        #                  that means [matrix] -> python-olm (no wheel,
+        #                  needs `make` to build from sdist) and the
+        #                  install fails.
+        #   --extra all  = just the [all] extra's contents (curated).
+        & $UvCmd sync --extra all --locked
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
@@ -849,16 +856,16 @@ function Install-Dependencies {
     # for users.
     $brokenExtras = @()
 
+    # Mirror [all] in pyproject.toml. Slim list (post-2026-05-12 lazy-install
+    # migration): only extras that genuinely can't be lazy-installed via
+    # tools/lazy_deps.py. Keep in sync with install.sh's _ALL_EXTRAS.
     $allExtras = @(
-        "modal","daytona","vercel","messaging","matrix","cron","cli","dev",
-        "tts-premium","slack","pty","honcho","mcp","homeassistant","sms",
-        "acp","voice","dingtalk","feishu","google","bedrock","web",
-        "youtube"
+        "cron","cli","dev","pty","mcp","homeassistant","sms","acp",
+        "google","web","youtube"
     )
     $pypiExtras = @(
-        "web","mcp","cron","cli","voice","messaging","slack","dev","acp",
-        "pty","homeassistant","sms","tts-premium","honcho","google",
-        "bedrock","dingtalk","feishu","modal","daytona","vercel","youtube"
+        "web","mcp","cron","cli","dev","acp","pty","homeassistant","sms",
+        "google","youtube"
     )
     $safeAll  = ($allExtras  | Where-Object { $brokenExtras -notcontains $_ }) -join ","
     $safePypi = ($pypiExtras | Where-Object { $brokenExtras -notcontains $_ }) -join ","

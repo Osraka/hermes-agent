@@ -1100,22 +1100,30 @@ install_deps() {
     # extras spec, NOT because they're equivalent in posture.
     if [ -f "uv.lock" ]; then
         log_info "Trying tier: hash-verified (uv.lock) ..."
-        log_info "(this resolves + downloads ~50 packages — first run on a fresh"
-        log_info " venv can take 1-5 minutes; uv prints progress below)"
+        log_info "(this resolves + downloads the curated [all] set — first run on a"
+        log_info " fresh venv can take 1-5 minutes; uv prints progress below)"
         # Stream uv's progress directly to the user instead of swallowing
         # it with `2>"$(mktemp)"`.  Two reasons:
-        #   1. `--all-extras --locked` against a fresh venv has to pull
-        #      every transitive (torch-class deps included) — silencing
-        #      stderr makes the install look frozen for minutes on slow
-        #      networks. Users see "Trying tier: hash-verified ..." and
-        #      assume it's hung.
+        #   1. `--extra all --locked` against a fresh venv has to pull
+        #      every transitive — silencing stderr makes the install
+        #      look frozen for minutes on slow networks. Users see
+        #      "Trying tier: hash-verified ..." and assume it's hung.
         #   2. The previous `2>"$(mktemp)"` substituted the path at
         #      command-build time but never saved it, so on failure the
         #      uv error message was unreachable — the user just got the
         #      generic "lockfile may be stale" warning.
+        #
+        # Critical flag choice: `--extra all`, NOT `--all-extras`.
+        #   --all-extras = every [project.optional-dependencies] key.
+        #                  This bypasses the curated `[all]` extra
+        #                  entirely and pulls e.g. [matrix] (which
+        #                  needs python-olm + make on Windows) and
+        #                  [rl] (git+https deps that fail offline).
+        #   --extra all  = install just the `[all]` extra's contents.
+        #                  This respects the curation in pyproject.toml.
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --all-extras --locked; then
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
@@ -1146,10 +1154,12 @@ install_deps() {
     # Each tier's stderr is captured to a tempfile so we can show the user
     # WHY the higher tier failed instead of silently dropping support.
     local _BROKEN_EXTRAS=()  # populate when an extra becomes unresolvable
+    # Mirror [all] in pyproject.toml. Slim list (post-2026-05-12 lazy-install
+    # migration): only extras that genuinely can't be lazy-installed via
+    # tools/lazy_deps.py. If you add a new extra to [all] in pyproject.toml,
+    # add it here too — and to install.ps1's $allExtras.
     local _ALL_EXTRAS=(
-        modal daytona vercel messaging matrix cron cli dev tts-premium slack
-        pty honcho mcp homeassistant sms acp voice dingtalk feishu google
-        bedrock web youtube
+        cron cli dev pty mcp homeassistant sms acp google web youtube
     )
     # Tier 2: all extras minus _BROKEN_EXTRAS
     local _SAFE_EXTRAS=()
@@ -1164,12 +1174,10 @@ install_deps() {
     local _SAFE_SPEC
     _SAFE_SPEC=".[$(IFS=,; echo "${_SAFE_EXTRAS[*]}")]"
     # Tier 3: PyPI-only extras (no git deps), still skipping broken ones.
-    # Mirrors the install.ps1 list but excludes [rl] / [yc-bench] / [matrix]
-    # (matrix needs python-olm which fails to build on some hosts).
+    # Mirrors install.ps1's $pypiExtras. Slim list (post-2026-05-12 lazy-
+    # install migration): only extras that genuinely can't be lazy-installed.
     local _PYPI_EXTRAS=(
-        web mcp cron cli voice messaging slack dev acp pty homeassistant sms
-        tts-premium honcho google bedrock dingtalk feishu modal daytona vercel
-        youtube
+        web mcp cron cli dev acp pty homeassistant sms google youtube
     )
     local _PYPI_SAFE=()
     for _e in "${_PYPI_EXTRAS[@]}"; do
