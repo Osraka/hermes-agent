@@ -1018,6 +1018,11 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Inline LLM risk annotations for terminal tool calls.
+        #   risky  — confirm only explicit HIGH/UNKNOWN risk annotations
+        #   always — confirm each distinct terminal command
+        #   never  — bypass approval prompts like --yolo / approvals.mode=off
+        "confirmation_policy": "risky",
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.
@@ -5496,6 +5501,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "modal_mode": "TERMINAL_MODAL_MODE",
     "cwd": "TERMINAL_CWD",
     "timeout": "TERMINAL_TIMEOUT",
+    "confirmation_policy": "TERMINAL_CONFIRMATION_POLICY",
     "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
     "docker_image": "TERMINAL_DOCKER_IMAGE",
     "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
