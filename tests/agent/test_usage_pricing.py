@@ -168,6 +168,72 @@ def test_estimate_usage_cost_refuses_cache_pricing_without_official_cache_rate(m
     assert result.status == "unknown"
 
 
+def test_bedrock_claude_cache_usage_is_priced():
+    result = estimate_usage_cost(
+        "anthropic.claude-sonnet-4-6",
+        CanonicalUsage(
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=10000,
+            cache_write_tokens=2000,
+        ),
+        provider="bedrock",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    assert result.pricing_version == "bedrock-pricing-2026-04"
+    # 1k input at $3/M + 500 output at $15/M + 10k cache-read at $0.30/M
+    # + 2k cache-write at $3.75/M.
+    assert float(result.amount_usd) == 0.021
+
+
+def test_bedrock_inference_profile_model_uses_bare_pricing_entry():
+    entry = get_pricing_entry(
+        "us.anthropic.claude-sonnet-4-6-20250514-v1:0",
+        provider="bedrock",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 3.0
+    assert float(entry.output_cost_per_million) == 15.0
+    assert float(entry.cache_read_cost_per_million) == 0.3
+    assert float(entry.cache_write_cost_per_million) == 3.75
+
+
+def test_bedrock_pricing_normalizes_less_common_inference_profile_prefixes():
+    entry = get_pricing_entry(
+        "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
+        provider="bedrock",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.8
+    assert float(entry.output_cost_per_million) == 4.0
+    assert float(entry.cache_read_cost_per_million) == 0.08
+    assert float(entry.cache_write_cost_per_million) == 1.0
+
+
+def test_bedrock_runtime_base_url_uses_official_pricing_without_models_probe(monkeypatch):
+    def _fail_fetch(*args, **kwargs):
+        raise AssertionError("Bedrock pricing should not call OpenAI-compatible /models")
+
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        _fail_fetch,
+    )
+
+    result = estimate_usage_cost(
+        "global.anthropic.claude-sonnet-4-6",
+        CanonicalUsage(input_tokens=1000, output_tokens=1000, cache_read_tokens=1000),
+        provider="bedrock",
+        base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+
+
 def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_endpoint_model_metadata",

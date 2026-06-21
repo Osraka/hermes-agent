@@ -451,6 +451,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("15.00"),
         output_cost_per_million=Decimal("75.00"),
+        cache_read_cost_per_million=Decimal("1.50"),
+        cache_write_cost_per_million=Decimal("18.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -461,6 +463,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
         output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -471,6 +475,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("3.00"),
         output_cost_per_million=Decimal("15.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        cache_write_cost_per_million=Decimal("3.75"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -481,6 +487,8 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     ): PricingEntry(
         input_cost_per_million=Decimal("0.80"),
         output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        cache_write_cost_per_million=Decimal("1.00"),
         source="official_docs_snapshot",
         source_url="https://aws.amazon.com/bedrock/pricing/",
         pricing_version="bedrock-pricing-2026-04",
@@ -601,6 +609,28 @@ def _normalize_anthropic_model_name(model: str) -> str:
     return name
 
 
+_BEDROCK_INFERENCE_PROFILE_PREFIXES = (
+    "global.",
+    "us.",
+    "eu.",
+    "ap.",
+    "apac.",
+    "jp.",
+    "ca.",
+    "sa.",
+    "me.",
+    "af.",
+)
+
+
+def _normalize_bedrock_model_name(model: str) -> str:
+    name = model.lower().strip()
+    for prefix in _BEDROCK_INFERENCE_PROFILE_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
     model = route.model.lower()
     # Direct lookup first
@@ -614,6 +644,26 @@ def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]
             entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
             if entry:
                 return entry
+    if route.provider == "bedrock":
+        normalized = _normalize_bedrock_model_name(model)
+        if normalized != model:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, normalized))
+            if entry:
+                return entry
+        bedrock_entries = (
+            (known_model, known_entry)
+            for (provider, known_model), known_entry in _OFFICIAL_DOCS_PRICING.items()
+            if provider == route.provider
+        )
+        for known_model, known_entry in sorted(
+            bedrock_entries,
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if normalized == known_model or normalized.startswith(
+                (f"{known_model}-", f"{known_model}:")
+            ):
+                return known_entry
     return None
 
 
@@ -688,7 +738,7 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
-    if route.base_url:
+    if route.base_url and route.provider != "bedrock":
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
             route.model,
