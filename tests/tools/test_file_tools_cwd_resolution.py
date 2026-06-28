@@ -89,6 +89,66 @@ def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     assert resolved == (workspace / "target.py")
 
 
+def _docker_config(cwd="/root"):
+    return {
+        "env_type": "docker",
+        "cwd": cwd,
+    }
+
+
+def test_docker_file_resolution_uses_sanitized_container_cwd(_isolated_cwd, monkeypatch):
+    """Before the Docker env exists, file tools must not anchor to host cwd."""
+    monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/project")
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _docker_config("/root"))
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id="docker-session")
+
+    assert resolved == Path("/root/target.py").resolve()
+    assert not str(resolved).startswith("/Users/someone/project")
+
+
+def test_docker_file_resolution_honors_workspace_mount_cwd(_isolated_cwd, monkeypatch):
+    """When Docker cwd mounting is enabled, first file calls resolve in /workspace."""
+    monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/project")
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _docker_config("/workspace"))
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id="docker-mounted")
+
+    assert resolved == Path("/workspace/target.py").resolve()
+
+
+def test_docker_file_resolution_ignores_host_task_cwd_override(_isolated_cwd, monkeypatch):
+    """CWD-only desktop overrides can carry host paths; file tools must sanitize them too."""
+    task_id = "desktop-docker-session"
+    monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/project")
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _docker_config("/root"))
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {
+        task_id: {"cwd": "/Users/someone/project"},
+    })
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
+
+    assert resolved == Path("/root/target.py").resolve()
+
+
+def test_docker_file_resolution_keeps_container_task_cwd_override(_isolated_cwd, monkeypatch):
+    """In-container overrides from benchmark/RL tasks still win."""
+    task_id = "docker-task"
+    monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/project")
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _docker_config("/root"))
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {
+        task_id: {"cwd": "/workspace/task"},
+    })
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+    resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
+
+    assert resolved == Path("/workspace/task/target.py").resolve()
+
+
 def test_absolute_input_path_ignores_base(_isolated_cwd, monkeypatch):
     """An absolute input path is never re-anchored."""
     workspace, decoy = _isolated_cwd

@@ -137,14 +137,59 @@ def _sentinel_free_abs_cwd(raw: str | None) -> str | None:
 
 
 def _configured_terminal_cwd() -> str | None:
-    """Return ``$TERMINAL_CWD`` only when it names a real directory anchor.
+    """Return a configured cwd only when it names a real directory anchor.
 
-    Sentinel values (see ``_TERMINAL_CWD_SENTINELS``) and relative paths are
-    rejected — a relative anchor is meaningless without knowing which cwd it is
-    relative to, which is exactly the ambiguity that misroutes worktree edits.
-    Only an absolute, sentinel-free value is honored.
+    Container backends use the sanitized in-container cwd from
+    ``terminal_tool._get_env_config()``. Local/SSH-style backends fall back to
+    ``$TERMINAL_CWD`` when it is absolute and not a sentinel value (see
+    ``_TERMINAL_CWD_SENTINELS``). Relative anchors are rejected because they are
+    ambiguous and can misroute worktree edits.
     """
+    container_cwd = _configured_container_cwd()
+    if container_cwd:
+        return container_cwd
     return _sentinel_free_abs_cwd(os.environ.get("TERMINAL_CWD"))
+
+
+def _configured_container_cwd() -> str | None:
+    """Return the sanitized in-container cwd for container backends.
+
+    ``terminal_tool._get_env_config()`` already maps host cwd values like
+    ``/Users/me/project`` to an in-container cwd (``/root`` by default, or
+    ``/workspace`` when Docker cwd mounting is explicitly enabled). File tools
+    must use that sanitized cwd before the first terminal/file call creates the
+    container; otherwise relative reads/writes can be resolved against the host
+    workspace during a Docker cold start.
+    """
+    try:
+        from tools.terminal_tool import _CONTAINER_BACKENDS, _get_env_config
+
+        config = _get_env_config()
+        if config.get("env_type") not in _CONTAINER_BACKENDS:
+            return None
+        return _sentinel_free_abs_cwd(config.get("cwd"))
+    except Exception:
+        return None
+
+
+def _container_safe_abs_cwd(raw: str | None) -> str | None:
+    """Return *raw* only when it is a usable cwd for the active backend."""
+    try:
+        from tools.terminal_tool import (
+            _CONTAINER_BACKENDS,
+            _get_env_config,
+            _is_unusable_container_cwd,
+        )
+
+        config = _get_env_config()
+        if (
+            config.get("env_type") in _CONTAINER_BACKENDS
+            and _is_unusable_container_cwd(str(raw or ""))
+        ):
+            return None
+    except Exception:
+        pass
+    return _sentinel_free_abs_cwd(raw)
 
 
 def _registered_task_cwd_override(task_id: str = "default") -> str | None:
@@ -163,7 +208,12 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     except Exception:
         return None
 
-    return _sentinel_free_abs_cwd(overrides.get("cwd"))
+    return _container_safe_abs_cwd(overrides.get("cwd"))
+
+
+def _last_known_cwd_for_backend(task_id: str = "default") -> str | None:
+    """Return the preserved cwd when it is valid for the active backend."""
+    return _container_safe_abs_cwd(_last_known_cwd_for(task_id))
 
 
 def _live_cwd_if_owned(env, task_id: str) -> str | None:
@@ -260,7 +310,7 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     # still lands in the user's directory (root cause of #26211: write happens
     # via _resolve_path_for_task -> here, which runs before _get_file_ops
     # rebuilds the env). Keyed by the resolved container id, same as the save.
-    preserved = _last_known_cwd_for(task_id)
+    preserved = _last_known_cwd_for_backend(task_id)
     if preserved:
         return preserved
     return _configured_terminal_cwd()
